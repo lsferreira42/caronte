@@ -1,0 +1,21 @@
+core:
+        name: gocache_client_syslog
+        desc: Client syslog server from GoCache
+
+input:
+        plugin: in_tcp
+        host: 0.0.0.0
+        port: 5514
+
+middle:
+        - $log_line.split()[2].replace('NULL', '')
+
+output:
+        plugin: out_tcp
+        host: 127.0.0.1
+        port: 5515
+        buffer_size: 5mb
+        flush_time: 5s
+        connect_timeout: 0.1
+        send_timeout: 0.1
+
