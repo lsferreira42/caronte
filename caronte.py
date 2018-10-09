@@ -1,9 +1,82 @@
 #!/usr/bin/env python
 ''' A log aggregator, parser and forwarder'''
 
+import os
+import sys
 import asyncore
 import socket
 import logging
+import json
+from time import sleep
+from flask import Flask
+from Queue import Queue
+from threading import Thread
+from numbers import Number
+from collections import Set, Mapping, deque
+
+# We need to measure our python object sizes
+try: # Python 2
+    zero_depth_bases = (basestring, Number, xrange, bytearray)
+    iteritems = 'iteritems'
+except NameError: # Python 3
+    zero_depth_bases = (str, bytes, Number, range, bytearray)
+    iteritems = 'items'
+
+
+# Start Flask
+api = Flask(__name__)
+
+#Global objects
+global log_queue
+global log_object
+log_queue = deque()
+log_object = {}
+
+# Logging config
+logging.basicConfig(level=logging.INFO, format='%(name)s:[%(levelname)s]: %(message)s')
+
+
+# Core config
+core_config = {'pause': False,
+               'pause_timer': 10,
+               'terminate': False,
+               'end_test': False
+               }
+
+class Worker(Thread):
+    """ The thread pool worker """
+    def __init__(self, tasks):
+        Thread.__init__(self)
+        self.tasks = tasks
+        self.daemon = True
+        self.start()
+
+    def run(self):
+        while True:
+            func, args, kargs = self.tasks.get()
+            try:
+                func(*args, **kargs)
+            except Exception as error:
+                logging.info(error)
+            finally:
+                self.tasks.task_done()
+
+
+class ThreadPool(object):
+    """ Here is the pool of threads that will execute our worker """
+    def __init__(self, num_threads):
+        self.tasks = Queue(num_threads)
+        for _ in range(num_threads):
+            Worker(self.tasks)
+
+    def add_task(self, func, *args, **kargs):
+        """ Add a task to the pool """
+        self.tasks.put((func, args, kargs))
+
+    def wait_completion(self):
+        """ Wait for the threads in pool to finish """
+        self.tasks.join()
+
 
 class Server(asyncore.dispatcher):
     def __init__(self, address):
@@ -42,24 +115,83 @@ class ClientHandler(asyncore.dispatcher):
         self.logger.debug('handle_write() -> (%d) "%s"', sent, data[:sent].rstrip())
 
     def handle_read(self):
-        data = self.recv(1024)
-        if data[-1:].decode("utf-8") == '\n':
-            self.logger.debug('handle_read() -> (%d) "%s"', len(data), data)
+        data = ''
+        while data[-1:].decode("utf-8") != '\n':
+            data += self.recv(1)
+        for i in data.split("\n"):
+            if i not in ('', '\n'):
+                try:
+                    log_json = json.loads(i, strict=False)
+                    log_queue.append(log_json)
+                    logging.info("rolou")
+                except Exception as err:
+                    print err
+        #if data[-1:].decode("utf-8") == '\n':
+        #    self.logger.debug('handle_read() -> (%d) "%s"', len(data), data)
         
 
     def handle_close(self):
         self.logger.debug('handle_close()')
         self.close()
 
+def getsize(in_object):
+    return sys.getsizeof(in_object)
+
+def bytes_to_mbytes(in_bytes):
+    return ('{:,.0f}'.format(in_bytes/float(1<<20)))
+
+
+def run_send_loop():
+    """ Loop to send the logs to the clients """
+    global log_queue
+    global log_object
+    for i in log_queue:
+        logging.info(i)
+    sleep(1)
+    pass
+
 def run_loop(host, port):
     tcp_server = Server((host, port))
     return asyncore.loop()
 
 
+def api_pause():
+    """ Api method for a pause in the scrapping """
+    core_config["pause"] = True
+    return 'Ok'
+
+
+def api_start():
+    """ Api method to continue after a pause """
+    core_config["pause"] = False
+    return 'Ok'
+
+
+def api_queuelist():
+    """ Api Method that return the number of remaining itens in queue """
+    return str(len(link_queue)) + '\n'
+
+
 def main():
-    logging.basicConfig(level=logging.DEBUG, format='%(name)s:[%(levelname)s]: %(message)s')
-    run_loop('0.0.0.0', 12345)
+    pool = ThreadPool(12)
+    pool.add_task(run_loop, "0.0.0.0", 5514)
+    pool.add_task(api.run, host='0.0.0.0', port=5000)
+    for i in range(1, 9):
+        pool.add_task(run_send_loop)
+    while core_config["terminate"] is False:
+        try:
+            if core_config["pause"]:
+                sleep(float(core_config["pause_timer"]))
+                continue
+        except KeyboardInterrupt:
+            logging.info("\nWaiting for the thread pool to exit...")
+            del pool
+            logging.info("\nExiting with {0} itens in queue.".format(len(log_queue)))
+            break
+        except Exception as err:
+            logging.info(err)
+        sleep(1)
+    return 0
 
-
-if __name__ == '__main__':
-     main() 
+if __name__ == "__main__":
+    sys.exit(main())

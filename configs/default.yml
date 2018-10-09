@@ -1,3 +1,7 @@
+# Dynamic output
+# Keepalive
+# Metrics
+
 core:
         name: gocache_client_syslog
         desc: Client syslog server from GoCache
